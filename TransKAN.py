@@ -79,11 +79,13 @@ class KAN(nn.Module):
         layers = []
         layers.append(nn.Linear(input_dim, hidden_dim))
         layers.append(nn.ReLU())
+        layers.append(nn.BatchNorm1d(hidden_dim))  # 添加BatchNorm
         layers.append(nn.Dropout(dropout))
 
         for _ in range(num_layers - 2):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
             layers.append(nn.ReLU())
+            layers.append(nn.BatchNorm1d(hidden_dim))  # 添加BatchNorm
             layers.append(nn.Dropout(dropout))
 
         layers.append(nn.Linear(hidden_dim, 1))
@@ -110,6 +112,8 @@ class KAN(nn.Module):
 
         best_val_auc = 0
         best_epoch = 0
+        patience = 10
+        no_improve = 0
 
         for epoch in range(epochs):
             self.train()
@@ -146,6 +150,13 @@ class KAN(nn.Module):
                 best_val_auc = val_metrics['auc']
                 best_epoch = epoch + 1
                 torch.save(self.state_dict(), 'best_model.pt')
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if no_improve >= patience:
+                logger.info(f"Early stopping triggered. No improvement for {patience} epochs.")
+                break
 
             if early_stopping.early_stop:
                 logger.info(f"Early stopping triggered. Best epoch: {best_epoch}")
@@ -322,14 +333,17 @@ def main(args):
                                                    label_col_name=args.label_col,
                                                    augment_factor=args.augment_factor)
 
+    # 首先分割出测试集
+    X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.2, random_state=args.random_seed, stratify=y)
+
     skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=args.random_seed)
     
     fold_results = []
-    for fold, (train_index, val_index) in enumerate(skf.split(X, y), 1):
+    for fold, (train_index, val_index) in enumerate(skf.split(X_train_val, y_train_val), 1):
         logger.info(f"Fold {fold}")
         
-        X_train, X_val = X.iloc[train_index], X.iloc[val_index]
-        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+        X_train, X_val = X_train_val.iloc[train_index], X_train_val.iloc[val_index]
+        y_train, y_val = y_train_val.iloc[train_index], y_train_val.iloc[val_index]
 
         X_resampled, y_resampled = resample(X_train, y_train, strategy=args.resample_strategy,
                                             random_state=args.random_seed)
@@ -340,8 +354,8 @@ def main(args):
         else:
             logger.info("使用之前保存的最佳参数")
 
-        # 增加epochs数量
-        best_params["epochs"] = 200  # 或者更多，取决于你的需求
+        # 减少epochs数量
+        best_params["epochs"] = 50  # 减少到50个epoch
 
         model = KAN(
             input_dim=X_resampled.shape[1],
@@ -357,25 +371,19 @@ def main(args):
         fold_results.append(metrics)
 
         logger.info(f"Fold {fold} Results:")
-        logger.info(f"  Accuracy:  {metrics['accuracy']:.4f}")
-        logger.info(f"  Precision: {metrics['precision']:.4f}")
-        logger.info(f"  Recall:    {metrics['recall']:.4f}")
-        logger.info(f"  F1 Score:  {metrics['f1']:.4f}")
-        logger.info(f"  AUC:       {metrics['auc']:.4f}")
+        for metric, value in metrics.items():
+            logger.info(f"  {metric.capitalize()}:  {value:.4f}")
 
     # Calculate and print average metrics
     avg_metrics = {metric: np.mean([fold[metric] for fold in fold_results]) for metric in fold_results[0]}
     std_metrics = {metric: np.std([fold[metric] for fold in fold_results]) for metric in fold_results[0]}
 
-    logger.info("Average Results:")
-    logger.info(f"  Accuracy:  {avg_metrics['accuracy']:.4f} (+/- {std_metrics['accuracy']:.4f})")
-    logger.info(f"  Precision: {avg_metrics['precision']:.4f} (+/- {std_metrics['precision']:.4f})")
-    logger.info(f"  Recall:    {avg_metrics['recall']:.4f} (+/- {std_metrics['recall']:.4f})")
-    logger.info(f"  F1 Score:  {avg_metrics['f1']:.4f} (+/- {std_metrics['f1']:.4f})")
-    logger.info(f"  AUC:       {avg_metrics['auc']:.4f} (+/- {std_metrics['auc']:.4f})")
+    logger.info("Cross-validation Results:")
+    for metric in avg_metrics:
+        logger.info(f"  {metric.capitalize()}:  {avg_metrics[metric]:.4f} (+/- {std_metrics[metric]:.4f})")
 
-    # Train final model on all data
-    X_resampled, y_resampled = resample(X, y, strategy=args.resample_strategy, random_state=args.random_seed)
+    # Train final model on all training data
+    X_resampled, y_resampled = resample(X_train_val, y_train_val, strategy=args.resample_strategy, random_state=args.random_seed)
     final_model = KAN(
         input_dim=X_resampled.shape[1],
         hidden_dim=best_params["hidden_dim"],
@@ -386,14 +394,11 @@ def main(args):
     final_model.fit(X_resampled, y_resampled, X_resampled, y_resampled, epochs=best_params["epochs"], 
                     batch_size=best_params["batch_size"], learning_rate=best_params["lr"])
 
-    # Evaluate final model
-    final_metrics = evaluate_model(final_model, X, y)
-    logger.info("Final Model Results:")
-    logger.info(f"  Accuracy:  {final_metrics['accuracy']:.4f}")
-    logger.info(f"  Precision: {final_metrics['precision']:.4f}")
-    logger.info(f"  Recall:    {final_metrics['recall']:.4f}")
-    logger.info(f"  F1 Score:  {final_metrics['f1']:.4f}")
-    logger.info(f"  AUC:       {final_metrics['auc']:.4f}")
+    # Evaluate final model on test set
+    test_metrics = evaluate_model(final_model, X_test, y_test)
+    logger.info("Test Set Results:")
+    for metric, value in test_metrics.items():
+        logger.info(f"  {metric.capitalize()}:  {value:.4f}")
 
     # Save the final model
     torch.save(final_model.state_dict(), 'final_model.pt')
