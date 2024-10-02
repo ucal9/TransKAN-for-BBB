@@ -166,55 +166,72 @@ features_df.to_csv(output_features_file, index=False)
 # 打印数据集和保存文件的信息
 logging.info(f'Number of samples: {features_df.shape[0]}')
 logging.info(f'Number of features per sample: {features_df.shape[1] - 2}')  # 减去 'SMILES' 和 'Label' 两列
-logging.info(f'64维度的特征已保存到 {output_features_file}')
+logging.info(f'nlp的特征已保存到 {output_features_file}')
 
 # 模型评估
-model.eval()
-y_pred = []
-y_true = []
-y_scores = []
-with torch.no_grad():
-    for batch in test_loader:
-        inputs, targets = batch
-        outputs = model(inputs)
-        _, predicted = torch.max(outputs, 1)
-        y_pred.extend(predicted.cpu().numpy())
-        y_true.extend(targets.cpu().numpy())
-        y_scores.extend(torch.softmax(outputs, dim=1)[:, 1].cpu().numpy())
+def evaluate_model(model, data_loader, criterion):
+    model.eval()
+    total_loss = 0
+    y_pred = []
+    y_true = []
+    y_scores = []
+    with torch.no_grad():
+        for batch in data_loader:
+            inputs, targets = batch
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            y_pred.extend(predicted.cpu().numpy())
+            y_true.extend(targets.cpu().numpy())
+            y_scores.extend(torch.softmax(outputs, dim=1)[:, 1].cpu().numpy())
+    
+    return total_loss / len(data_loader), y_true, y_pred, y_scores
+
+# 评估验证集
+val_loss, val_true, val_pred, val_scores = evaluate_model(model, val_loader, criterion)
+
+# 评估测试集
+test_loss, test_true, test_pred, test_scores = evaluate_model(model, test_loader, criterion)
 
 # 计算并打印评估指标
-accuracy = accuracy_score(y_true, y_pred)
-precision = precision_score(y_true, y_pred)
-recall = recall_score(y_true, y_pred)
-f1 = f1_score(y_true, y_pred)
-cm = confusion_matrix(y_true, y_pred)
-auc = roc_auc_score(y_true, y_scores)
-mcc = matthews_corrcoef(y_true, y_pred)
+def print_metrics(y_true, y_pred, y_scores, dataset_name):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred)
+    auc = roc_auc_score(y_true, y_scores)
+    mcc = matthews_corrcoef(y_true, y_pred)
 
-# 计算SP (Specificity) 和 Gmeans
-TN, FP, FN, TP = cm.ravel()
-specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
-gmeans = math.sqrt(recall * specificity)
+    TN, FP, FN, TP = cm.ravel()
+    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
+    gmeans = math.sqrt(recall * specificity)
 
-# 打印到控制台
-print(f'Accuracy: {accuracy:.4f}')
-print(f'Precision (PRE): {precision:.4f}')
-print(f'Recall (SE): {recall:.4f}')
-print(f'Specificity (SP): {specificity:.4f}')
-print(f'F1 Score: {f1:.4f}')
-print(f'Gmeans: {gmeans:.4f}')
-print(f'AUC: {auc:.4f}')
-print(f'MCC: {mcc:.4f}')
-print('Confusion Matrix:')
-print(cm)
+    print(f'\n{dataset_name} Metrics:')
+    print(f'Accuracy: {accuracy:.4f}')
+    print(f'Precision (PRE): {precision:.4f}')
+    print(f'Recall (SE): {recall:.4f}')
+    print(f'Specificity (SP): {specificity:.4f}')
+    print(f'F1 Score: {f1:.4f}')
+    print(f'Gmeans: {gmeans:.4f}')
+    print(f'AUC: {auc:.4f}')
+    print(f'MCC: {mcc:.4f}')
+    print('Confusion Matrix:')
+    print(cm)
 
-# 记录到日志
-logging.info(f'Accuracy: {accuracy:.4f}')
-logging.info(f'Precision (PRE): {precision:.4f}')
-logging.info(f'Recall (SE): {recall:.4f}')
-logging.info(f'Specificity (SP): {specificity:.4f}')
-logging.info(f'F1 Score: {f1:.4f}')
-logging.info(f'Gmeans: {gmeans:.4f}')
-logging.info(f'AUC: {auc:.4f}')
-logging.info(f'MCC: {mcc:.4f}')
-logging.info(f'Confusion Matrix:\n{cm}')
+    logging.info(f'\n{dataset_name} Metrics:')
+    logging.info(f'Accuracy: {accuracy:.4f}')
+    logging.info(f'Precision (PRE): {precision:.4f}')
+    logging.info(f'Recall (SE): {recall:.4f}')
+    logging.info(f'Specificity (SP): {specificity:.4f}')
+    logging.info(f'F1 Score: {f1:.4f}')
+    logging.info(f'Gmeans: {gmeans:.4f}')
+    logging.info(f'AUC: {auc:.4f}')
+    logging.info(f'MCC: {mcc:.4f}')
+    logging.info(f'Confusion Matrix:\n{cm}')
+
+# 打印验证集和测试集的评估指标
+print_metrics(val_true, val_pred, val_scores, "Validation")
+print_metrics(test_true, test_pred, test_scores, "Test")
+
