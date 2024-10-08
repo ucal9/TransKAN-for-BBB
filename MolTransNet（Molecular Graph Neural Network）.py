@@ -11,6 +11,10 @@ from logging.handlers import RotatingFileHandler
 import os
 from collections import defaultdict
 from rdkit import Chem
+import umap
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import colorlog
 
 # 设置日志记录
 def setup_logger(log_file='training.log', max_bytes=10*1024*1024, backup_count=5):
@@ -29,10 +33,24 @@ def setup_logger(log_file='training.log', max_bytes=10*1024*1024, backup_count=5
     console_handler = logging.StreamHandler()
     
     # Create formatters and add it to handlers
-    format_str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    formatter = logging.Formatter(format_str)
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    
+    console_formatter = colorlog.ColoredFormatter(
+        "%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(message)s",
+        datefmt=None,
+        reset=True,
+        log_colors={
+            'DEBUG': 'cyan',
+            'INFO': 'green',
+            'WARNING': 'yellow',
+            'ERROR': 'red',
+            'CRITICAL': 'red,bg_white',
+        },
+        secondary_log_colors={},
+        style='%'
+    )
+    console_handler.setFormatter(console_formatter)
     
     # Add handlers to the logger
     logger.addHandler(file_handler)
@@ -108,7 +126,7 @@ def create_datasets(task, dataset, radius, device):
         data_original = [data for data in data_original if '.' not in data.split()[0]]
         dataset = []
 
-        for data in data_original:
+        for data in tqdm(data_original, desc=f"Processing {filename}"):
             smiles, property = data.strip().split()
             mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
             atoms = create_atoms(mol, atom_dict)
@@ -126,10 +144,12 @@ def create_datasets(task, dataset, radius, device):
 
             dataset.append((fingerprints, adjacency, molecular_size, property, smiles))
 
+        log.info(f"Processed {len(dataset)} molecules from {filename}")
         return dataset
 
     dataset_train = create_dataset('data_train.txt')
     dataset_train, dataset_dev = split_dataset(dataset_train, 0.9)
+    log.info(f"Split training data into {len(dataset_train)} training samples and {len(dataset_dev)} development samples")
     dataset_test = create_dataset('data_test.txt')
 
     return dataset_train, dataset_dev, dataset_test, len(fingerprint_dict)
@@ -321,6 +341,32 @@ class Tester(object):
         with open(filename, 'a') as f:
             f.write(result + '\n')
 
+    def save_umap(self, dataset, epoch):
+        N = len(dataset)
+        molecular_vectors = []
+        labels = []
+        for i in range(0, N, batch_test):
+            data_batch = list(zip(*dataset[i:i+batch_test]))
+            batch_labels = [label.item() for label in data_batch[-2]]
+            labels.extend(batch_labels)
+            inputs = data_batch[:-2]
+            with torch.no_grad():
+                batch_vectors = self.model.get_molecular_vectors(inputs).cpu().numpy()
+            molecular_vectors.append(batch_vectors)
+        
+        molecular_vectors = np.concatenate(molecular_vectors, axis=0)
+        
+        reducer = umap.UMAP()
+        embedding = reducer.fit_transform(molecular_vectors)
+        
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(embedding[:, 0], embedding[:, 1], c=labels, cmap='viridis')
+        plt.colorbar(scatter)
+        plt.title(f'UMAP projection of molecular vectors (Epoch {epoch})')
+        plt.savefig(f'umap_epoch_{epoch}.png')
+        plt.close()
+        log.info(f"Saved UMAP visualization for {N} molecules at epoch {epoch}")
+
 if __name__ == "__main__":
     task = 'classification'
     dataset = 'b3db'
@@ -381,6 +427,9 @@ if __name__ == "__main__":
 
     start = timeit.default_timer()
 
+    best_performance = 0
+    best_epoch = 0
+
     for epoch in range(iteration):
         epoch += 1
         if epoch % decay_interval == 0:
@@ -393,6 +442,12 @@ if __name__ == "__main__":
             ACC_test, PRE_test, SE_test, SP_test, Gmeans_test, F1_test, AUC_test, MCC_test = tester.test_classifier(dataset_test)
             prediction_train = (ACC_train, PRE_train, SE_train, SP_train, Gmeans_train, F1_train, AUC_train, MCC_train)
             prediction_test = (ACC_test, PRE_test, SE_test, SP_test, Gmeans_test, F1_test, AUC_test, MCC_test)
+            
+            # 更新最佳性能
+            if AUC_test > best_performance:
+                best_performance = AUC_test
+                best_epoch = epoch
+                tester.save_umap(dataset_test, epoch)
         elif task == 'regression':
             prediction_dev = tester.test_regressor(dataset_dev)
             prediction_test = tester.test_regressor(dataset_test)
@@ -413,3 +468,6 @@ if __name__ == "__main__":
         log.info(f'Epoch: {epoch}, Time: {time:.2f}s, Loss: {loss_train:.4f}')
         log.info(f'Training - ACC: {ACC_train:.4f}, PRE: {PRE_train:.4f}, SE: {SE_train:.4f}, SP: {SP_train:.4f}, Gmeans: {Gmeans_train:.4f}, F1: {F1_train:.4f}, AUC: {AUC_train:.4f}, MCC: {MCC_train:.4f}')
         log.info(f'Testing - ACC: {ACC_test:.4f}, PRE: {PRE_test:.4f}, SE: {SE_test:.4f}, SP: {SP_test:.4f}, Gmeans: {Gmeans_test:.4f}, F1: {F1_test:.4f}, AUC: {AUC_test:.4f}, MCC: {MCC_test:.4f}')
+
+    log.info(f'Best performance (AUC) achieved at epoch {best_epoch}: {best_performance:.4f}')
+    log.info(f'UMAP visualization of the best epoch saved as umap_epoch_{best_epoch}.png')
