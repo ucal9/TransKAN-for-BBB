@@ -341,14 +341,17 @@ class Tester(object):
         with open(filename, 'a') as f:
             f.write(result + '\n')
 
-    def save_umap(self, dataset, epoch):
+    def extract_features(self, dataset, dataset_name):
         N = len(dataset)
         molecular_vectors = []
         labels = []
+        smiles_list = []
         for i in range(0, N, batch_test):
             data_batch = list(zip(*dataset[i:i+batch_test]))
             batch_labels = [label.item() for label in data_batch[-2]]
+            batch_smiles = data_batch[-1]  # Assuming SMILES are stored in the last position
             labels.extend(batch_labels)
+            smiles_list.extend(batch_smiles)
             inputs = data_batch[:-2]
             with torch.no_grad():
                 batch_vectors = self.model.get_molecular_vectors(inputs).cpu().numpy()
@@ -356,16 +359,44 @@ class Tester(object):
         
         molecular_vectors = np.concatenate(molecular_vectors, axis=0)
         
+        # Create a DataFrame with SMILES, labels, and feature vectors
+        df = pd.DataFrame({'SMILES': smiles_list, 'Label': labels, 'Dataset': dataset_name})
+        for i in range(molecular_vectors.shape[1]):
+            df[f'Feature_{i+1}'] = molecular_vectors[:, i]
+        
+        return df
+
+    def save_features(self, dataset_train, dataset_dev, dataset_test, epoch):
+        df_train = self.extract_features(dataset_train, 'Train')
+        df_dev = self.extract_features(dataset_dev, 'Dev')
+        df_test = self.extract_features(dataset_test, 'Test')
+        
+        # Combine all datasets
+        df_all = pd.concat([df_train, df_dev, df_test], ignore_index=True)
+        
+        # Create the directory if it doesn't exist
+        os.makedirs('./multiple fusion/data', exist_ok=True)
+        
+        # Save the DataFrame to a CSV file
+        csv_filename = f'./multiple fusion/data/molecular_features_best_epoch_{epoch}.csv'
+        df_all.to_csv(csv_filename, index=False)
+        log.info(f"Saved molecular features for all datasets to {csv_filename}")
+        log.info(f"Number of molecules with saved feature vectors: {len(df_all)}")
+        
+        # Generate UMAP visualization for all data
+        molecular_vectors = df_all[[col for col in df_all.columns if col.startswith('Feature_')]].values
+        labels = df_all['Label'].values
+        
         reducer = umap.UMAP()
         embedding = reducer.fit_transform(molecular_vectors)
         
         plt.figure(figsize=(10, 8))
         scatter = plt.scatter(embedding[:, 0], embedding[:, 1], c=labels, cmap='viridis')
         plt.colorbar(scatter)
-        plt.title(f'UMAP projection of molecular vectors (Epoch {epoch})')
-        plt.savefig(f'umap_epoch_{epoch}.png')
+        plt.title(f'UMAP projection of all molecular vectors (Best Epoch {epoch})')
+        plt.savefig(f'./multiple fusion/data/umap_best_epoch_{epoch}.png')
         plt.close()
-        log.info(f"Saved UMAP visualization for {N} molecules at epoch {epoch}")
+        log.info(f"Saved UMAP visualization for all molecules at best epoch {epoch}")
 
 if __name__ == "__main__":
     task = 'classification'
@@ -447,7 +478,8 @@ if __name__ == "__main__":
             if AUC_test > best_performance:
                 best_performance = AUC_test
                 best_epoch = epoch
-                tester.save_umap(dataset_test, epoch)
+                # Save features for all datasets at the best epoch
+                tester.save_features(dataset_train, dataset_dev, dataset_test, epoch)
         elif task == 'regression':
             prediction_dev = tester.test_regressor(dataset_dev)
             prediction_test = tester.test_regressor(dataset_test)
@@ -470,4 +502,4 @@ if __name__ == "__main__":
         log.info(f'Testing - ACC: {ACC_test:.4f}, PRE: {PRE_test:.4f}, SE: {SE_test:.4f}, SP: {SP_test:.4f}, Gmeans: {Gmeans_test:.4f}, F1: {F1_test:.4f}, AUC: {AUC_test:.4f}, MCC: {MCC_test:.4f}')
 
     log.info(f'Best performance (AUC) achieved at epoch {best_epoch}: {best_performance:.4f}')
-    log.info(f'UMAP visualization of the best epoch saved as umap_epoch_{best_epoch}.png')
+    log.info(f'Molecular features and UMAP visualization of the best epoch saved in ./multiple fusion/data/')
