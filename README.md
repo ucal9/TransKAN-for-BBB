@@ -2,7 +2,7 @@
 
 # KAN模型预测血脑屏障(BBB)渗透性
 
-本项目使用基于Kolmogorov-Arnold表示定理并整合B样条的知识感知网络(Knowledge-Aware Network, KAN)模型来预测分子的血脑屏障(BBB)渗透性。
+本项目使用基于Kolmogorov-Arnold表示定理并整合B样条的多模态模型来预测分子的血脑屏障(BBB)渗透性。
 
 ## 环境设置
 
