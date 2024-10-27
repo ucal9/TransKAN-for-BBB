@@ -392,7 +392,7 @@ def run_experiment(data_file, smile_col='SMILES', label_col='BBB+/BBB-', augment
 
     fold_results = []
     best_fold_model = None
-    best_fold_auc = 0
+    best_fold_accuracy = 0  # Change this from best_fold_auc to best_fold_accuracy
 
     for fold, (train_index, val_index) in enumerate(skf.split(X_train_val, y_train_val), 1):
         logger.info(f"Fold {fold}")
@@ -418,19 +418,21 @@ def run_experiment(data_file, smile_col='SMILES', label_col='BBB+/BBB-', augment
         for metric, value in metrics.items():
             logger.info(f"  {metric.capitalize()}:  {value:.4f}")
 
-        # 保存最佳表现的模型
-        if metrics['auc'] > best_fold_auc:
-            best_fold_auc = metrics['auc']
+        # Save the model with the highest accuracy
+        if metrics['accuracy'] > best_fold_accuracy:  # Change this condition
+            best_fold_accuracy = metrics['accuracy']  # Update best accuracy
             best_fold_model = model
             torch.save(model.state_dict(), f'./models/transkan_bspline/best_fold_model.pt')
-            logger.info(f"新的最佳模型已保存 (折 {fold}, AUC: {best_fold_auc:.4f})")
+            logger.info(f"New best model saved (Fold {fold}, Accuracy: {best_fold_accuracy:.4f})")
 
     avg_metrics = {metric: np.mean([fold[metric] for fold in fold_results]) for metric in fold_results[0]}
     std_metrics = {metric: np.std([fold[metric] for fold in fold_results]) for metric in fold_results[0]}
 
     logger.info("Cross-validation Results:")
+    logger.info(f"  Accuracy:  {avg_metrics['accuracy']:.4f} (+/- {std_metrics['accuracy']:.4f})")
     for metric in avg_metrics:
-        logger.info(f"  {metric.capitalize()}:  {avg_metrics[metric]:.4f} (+/- {std_metrics[metric]:.4f})")
+        if metric != 'accuracy':
+            logger.info(f"  {metric.capitalize()}:  {avg_metrics[metric]:.4f} (+/- {std_metrics[metric]:.4f})")
 
     X_resampled, y_resampled = resample(X_train_val, y_train_val, strategy=resample_strategy)
     final_model = TransKAN(
@@ -445,8 +447,10 @@ def run_experiment(data_file, smile_col='SMILES', label_col='BBB+/BBB-', augment
 
     test_metrics = evaluate_model(final_model, X_test, y_test)
     logger.info("Test Set Results:")
+    logger.info(f"  Accuracy:  {test_metrics['accuracy']:.4f}")
     for metric, value in test_metrics.items():
-        logger.info(f"  {metric.capitalize()}:  {value:.4f}")
+        if metric != 'accuracy':
+            logger.info(f"  {metric.capitalize()}:  {value:.4f}")
 
     torch.save(final_model.state_dict(), './models/transkan_bspline/final_model.pt')
     logger.info("Final model saved to './models/transkan_bspline/final_model.pt'")
